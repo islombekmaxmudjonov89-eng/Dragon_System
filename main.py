@@ -2,76 +2,92 @@ import time
 import uuid
 import os
 from fastapi import FastAPI, Request, HTTPException
-from typing import Optional, Dict
-from motor.motor_asyncio import AsyncIOMotorClient # 2mlrd+ uchun asinxron ulanish shart
+from pydantic import BaseModel
+from typing import Optional
+from motor.motor_asyncio import AsyncIOMotorClient
 import uvicorn
-from functools import lru_cache
 
 app = FastAPI(title="Dragon Global: 2B+ Edition")
 
-# --- 🛰️ HIGH-SCALE DATABASE (MONGODB ASYNC) ---
+# --- 🛰️ DATABASE (HIGH-SCALE ASYNC) ---
+# Diqqat: <db_password> o'rniga o'z parolingni qo'y!
 MONGO_URL = "mongodb+srv://Dragon_admin:<db_password>@islombek.zpglyqc.mongodb.net/?appName=islombek"
-client = AsyncIOMotorClient(MONGO_URL, maxPoolSize=100) # Bir vaqtda 100ta ulanish
+client = AsyncIOMotorClient(MONGO_URL, maxPoolSize=100) # Bir vaqtda 100 ulanish
 db = client['dragon_game_db']
 accounts_db = db['players_vault']
 sessions_db = db['active_sessions']
 
-# --- UC/BC SERVICE INTEGRATION (SO'ROV QABUL QILISH) ---
-class UCRequest(BaseModel if 'BaseModel' in globals() else object):
+# --- MODELS (VALIDATION) ---
+class PlayerConnect(BaseModel):
+    player_id: str
+    hwid: str
+
+class UCRequest(BaseModel):
     player_id: str
     amount: int
     secret_key: str
 
-@app.post("/v1/internal/add-bc")
-async def add_bc_to_account(request: Request):
-    """UC Service dan kelgan so'rovni qabul qilish"""
-    data = await request.json()
-    player_id = data.get("player_id")
-    amount = data.get("amount")
-    secret_key = data.get("secret_key")
-
-    if secret_key != "DRAGON_SECRET_99": 
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    # Bazada BC balansi yangilash
-    await accounts_db.update_one(
-        {"player_id": player_id},
-        {"$inc": {"bc_balance": amount},
-         "$setOnInsert": {"registered_hwid": "PENDING", "created_at": time.time()}},
-        upsert=True
-    )
-    return {"status": "success", "msg": f"{amount} BC added to {player_id}"}
-
-# --- OPTIMIZATSIYA: 2MLRD+ UCHUN CACHE ---
-@lru_cache(maxsize=10000) # Eng faol 10k o'yinchini xotirada saqlaydi
-def get_cached_status(player_id: str):
-    return "ACTIVE"
-
-# --- DRAGON LOGS ---
+# --- 🐉 DRAGON LOGS (O'YINDAN KELADIGAN LOGLAR) ---
 @app.post("/log")
 async def receive_game_logs(request: Request):
-    data = await request.json()
-    # 2mlrd odamda 'print' ishlatib bo'lmaydi, lekin hozircha ko'rishing uchun qoldirdim
-    print(f"🐉 Log: {data.get('player_id')} is active")
-    return {"status": "ok"}
+    """Config.json dagi logReportUrl uchun"""
+    try:
+        data = await request.json()
+        # 2mlrd+ odamda loglarni terminalga chiqarish serverni sekinlashtiradi,
+        # lekin hozircha tekshirishing uchun qoldirdim
+        print(f"🐉 Dragon Log: {data}") 
+        return {"status": "ok"}
+    except:
+        return {"status": "error"}
 
-# --- CONNECT & SYNC (HIGH-SPEED) ---
-@app.post("/v1/game/connect")
-async def connect_player(player_id: str, hwid: str):
-    session_id = str(uuid.uuid4())
-    # Asinxron yozish - serverni to'xtatib qo'ymaydi
-    await sessions_db.update_one(
-        {"player_id": player_id},
-        {"$set": {"session_id": session_id, "hwid": hwid, "timestamp": time.time()}},
+# --- 💰 UC/BC SERVICE (SYSTEM INTEGRATION) ---
+@app.post("/v1/internal/add-bc")
+async def add_bc_to_account(data: UCRequest):
+    """UC Paneldan kelgan so'rovni bazaga muhrlash"""
+    if data.secret_key != "DRAGON_SECRET_99": 
+        raise HTTPException(status_code=403, detail="Taqiqlangan kirish!")
+
+    await accounts_db.update_one(
+        {"player_id": data.player_id},
+        {"$inc": {"bc_balance": data.amount},
+         "$setOnInsert": {"registered_hwid": "HWID_PENDING", "created_at": time.time()}},
         upsert=True
     )
-    return {"status": "connected", "token": session_id}
+    return {"status": "success", "player": data.player_id}
+
+# --- 🚀 CONNECT & SYNC (2MLRD+ SCALE) ---
+@app.post("/v1/game/connect")
+async def connect_player(data: PlayerConnect):
+    """O'yinchi kirganda sessiya ochish"""
+    session_id = str(uuid.uuid4())
+    
+    # Asinxron yozish - 2mlrd odamda server qotib qolmaydi
+    await sessions_db.update_one(
+        {"player_id": data.player_id},
+        {"$set": {
+            "session_id": session_id, 
+            "hwid": data.hwid, 
+            "timestamp": time.time(),
+            "x": 0, "y": 0
+        }},
+        upsert=True
+    )
+    
+    acc = await accounts_db.find_one({"player_id": data.player_id})
+    return {
+        "status": "connected",
+        "session_token": session_id,
+        "bc_balance": acc.get("bc_balance", 0) if acc else 0
+    }
 
 @app.get("/v1/server/health")
 async def health():
-    # 2mlrd odam uchun bazani sanash qimmatga tushadi, shuning uchun taxminiy statistik
+    """Server holatini tekshirish"""
     return {"status": "GLOBAL_FIRE_READY", "engine": "Dragon_V2_Async"}
 
+# --- ⚙️ RUNNER (RENDER COMPATIBLE) ---
 if __name__ == "__main__":
+    # Render avtomatik beradigan portni olish
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port, workers=4) # 4ta parallel ishchi (worker)
+    # Render Free tierda worker=1 bo'lishi barqarorlikni ta'minlaydi
+    uvicorn.run(app, host="0.0.0.0", port=port)
